@@ -1,12 +1,9 @@
+import pdb
 import numpy as np
 import pandas as pd
 from collections import defaultdict
 from statsmodels.stats.proportion import proportions_ztest
 
-
-'''
-This is a long, messy script for processing each of the 51 categorical variables
-'''
 
 #------- Categorize each cat variable ---------------
 # From looking at summaries in the notebook
@@ -50,42 +47,56 @@ def convert_all_date_columns(df):
     date_df = df[var_types['dates']].apply(convert_dates)
     return date_df
 
-def convert_thin(thin_col, target, thresh):
-    '''
-    Assign impact scores to each level of the 'thin' columns
 
-    return a series with the same index as thin_col, but with the values replaced by z-scores.
-    '''
 
-    # Temporary dataframe to store local data
-    temp_df = pd.DataFrame({'thin' : thin_col,
-                            'target' : target})
+class zscore_convert(object):
 
-    target_prop = temp_df.target.mean()  # Baseline
-    level_counts = temp_df.thin.value_counts()
+    def __init__(self, thresh):
+        self.thresh = thresh
+        self.to_bin = {}
 
-    # Bin category levels that account for less than <thresh> of the total data
-    to_bin = level_counts.index[level_counts < thresh]
-    temp_df['thin'][temp_df.thin.isin(to_bin)] = 'Other'
+    def get_pvals(self, col, target):
 
-    # Get a p-value for each proportion
-    agg = temp_df.groupby('thin')['target'].aggregate({
-        'count' : lambda x: x.sum(),
-        'nobs' : lambda x: x.count()
-    })
-    tscores = agg.apply(lambda x: proportions_ztest(x['count'], x['nobs'], target_prop)[0], axis=1)
+        target_prop = target.mean()  # Baseline
+        level_counts = col.value_counts()  # counts
 
-    # Replace levels in the original
-    temp_df = temp_df.replace({'thin': dict(tscores)})
-    return temp_df['thin']
+        # Bin category levels that account for less than <thresh> of the total data
+        to_bin = level_counts.index[level_counts < self.thresh]
+        col[col.isin(to_bin)] = 'Other'
 
-def convert_all_thin_vars(df, thresh, target):
-    '''
-    Convert each of the categorical columns that are sliced too thin
-    '''
-    tscore_df = df[var_types['thin']].apply(lambda x: convert_thin(x, target, thresh))
+        # Record the bins
+        self.to_bin[col.name] = to_bin
 
-    return tscore_df
+        # Get a p-value for each proportion
+        df = pd.concat([col,target],axis=1)
+        agg = df.groupby(col.name)['target'].aggregate({
+                'count' : lambda x: x.sum(),
+                'nobs' : lambda x: x.count()
+        })
+        zscores = agg.apply(lambda x: proportions_ztest(x['count'], x['nobs'], target_prop)[0], axis=1)
+
+        return defaultdict(int, zscores)
+
+
+    def fit(self, df, target):
+        '''
+        Only apply this to the training set
+        '''
+
+        # Get a dictionary of zscores for each column
+        self.score_dicts = {}
+        for col in df:
+            self.score_dicts[col] = self.get_pvals(df[col], target)
+
+
+    def transform(self, df):
+        '''
+        Convert each of the categorical columns that are sliced too thin
+        '''
+        for col in df:
+            df.loc[df[col].isin(self.to_bin[col]), col] =   'Other'
+            df[col] = df[col].apply(lambda x: self.score_dicts[col][x])
+        return df
 
 
 def engineer_dates(df):
@@ -93,9 +104,6 @@ def engineer_dates(df):
     diff_df = [('-'.join([col1,col2]), df[col1] - df[col2]) for col1 in df for col2 in df if not col1==col2]
 
     # Min/max/num present
-
-
-    
     return pd.DataFrame.from_dict(dict(diff_df))
 
 
