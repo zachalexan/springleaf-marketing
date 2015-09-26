@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict
 from statsmodels.stats.proportion import proportions_ztest
+from sklearn.preprocessing import OneHotEncoder, Imputer
 
 
 #  ------- Categorize each cat variable ---------------
@@ -33,20 +34,52 @@ for key, val in var_types.iteritems():
     var_types[key] = ['VAR_%04.f' % v for v in val]
 # -----------------------------------------------------------
 
+class CategoryEncoder(object):
+    '''
+    Perform one-hot-encoding of categorical variables.
+    Keep track of the actual levels for each variable
+    '''
 
-def convert_dates(date_col):
-    '''
-    Convert a date column to date format
-    '''
-    return pd.to_datetime(date_col, format='%d%b%y:%H:%M:%S')
+    def __init__(self):
+        pass
+
+    def fit(self, df):
+        '''
+        Input: DataFrame containing categorical features to be encoded
+        Output: (DataFrame of encodings, Dictionary of encodings)
+        '''
+
+        # Make sure variable types are all strings
+        df = df.replace(np.nan, 'NA')
+        df = df.apply(lambda col: col.astype(str))
+
+        # Use a dictionary to store the feature values
+        self.feature_key = {}
+        for col in df:
+            uniq_values = df[col].unique()
+            self.feature_key[col] = defaultdict(lambda: len(uniq_values), [(val, i) for i, val in enumerate(uniq_values)])
+
+        # Make new dataframe containing value labels
+        new_df = self.labels_to_numbers(df)
+
+        # One Hot encodings
+        self.encoding = OneHotEncoder()
+        self.encoding.fit(new_df)
 
 
-def convert_all_date_columns(df):
-    '''
-    Convert all date columns
-    '''
-    date_df = df[var_types['dates']].apply(convert_dates)
-    return date_df
+    def labels_to_numbers(self, df):
+            new = [df[col].apply(lambda val: self.feature_key[col][val]) for col in df]
+            return pd.DataFrame(new).T
+
+    def transform(self, df):
+        '''
+        One hot encoding of df
+        '''
+        # Make sure variable types are all strings
+        df = df.replace(np.nan, 'NA')
+        df = df.apply(lambda col: col.astype(str))
+        new_df = self.labels_to_numbers(df)
+        return pd.DataFrame(self.encoding.transform(new_df).toarray(), index=df.index)
 
 class ConvertZScore(object):
 
@@ -96,6 +129,43 @@ class ConvertZScore(object):
         return df
 
 
+class ImputeMissing(object):
+
+    def __init__(self, vartype='date'):
+        self.vartype = vartype
+
+    def fit(self, df):
+        if self.vartype == 'date':
+            self.fit_date(df)
+        elif self.vartype == 'numeric':
+            self.fit_numeric(df)
+        else:
+            print 'Must specify vartype'
+
+    def fit_date(self, df):
+        pass
+
+    def fit_numeric(self, df):
+        pass
+
+    def transform(self, df):
+        pass
+
+
+def convert_dates(date_col):
+    '''
+    Convert a date column to date format
+    '''
+    return pd.to_datetime(date_col, format='%d%b%y:%H:%M:%S')
+
+
+def convert_all_date_columns(df):
+    '''
+    Convert all date columns
+    '''
+    date_df = df[var_types['dates']].apply(convert_dates)
+    return date_df.astype(int)
+
 def prep_geography(df):
     '''
     Input is the entire DataFrame.
@@ -105,8 +175,7 @@ def prep_geography(df):
     states = ['VAR_0237', 'VAR_0274']
     out = pd.Series(df[states[0]] == df[states[1]])
     out.name = 'states_equal'
-    return out
-
+    return pd.DataFrame(out)
 
 def engineer_dates(df):
     # Take differences
@@ -121,35 +190,55 @@ def engineer_dates(df):
         })
     summary_df['date_range'] = summary_df['max_date'] - summary_df['min_date']
 
-    return pd.concat([summary_df, diff_df])
+    return pd.concat([summary_df, diff_df],axis=1).astype(int)
 
 
-class CategoryEncoder(object):
-    '''
-    Perform one-hot-encoding of categorical variables.
-    Keep track of the actual levels for each variable
-    '''
+def prep_categorical(df, train_idx, test_idx):
 
-    def __init__(self):
-        pass
+    # Convert all dates
+    date_df = convert_all_date_columns(df)
 
-    def fit(self, df):
-        '''
-        Input: DataFrame containing categorical features to be encoded
-        Output: (DataFrame of encodings, Dictionary of encodings)
-        '''
+    # Get engineered vars
+    eng_date_df = engineer_dates(date_df)
+    eng_geo_df = prep_geography(df)
 
-        # Make sure variable types are all strings
-        df = df.apply(lambda col: col.astype(str))
-        # Use a dictionary to store the feature values
-        self.feature_key = {}
-        for col in df:
-            uniq_values = df[col].unique()
-            self.feature_key[col] = dict([(val, i) for i, val in enumerate(uniq_values)])
+    # Train/test split
+    train = df.loc[train_idx, :]
+    test = df.loc[test_idx, :]
 
-        # Make new dataframe containing value labels
-        # new_df = df.replace(self.feature_key)
-        # return new_df
+    # Thinly sliced columns
+    zconv = ConvertZScore(thresh = 100)
+    zconv.fit(train[var_types['thin']], train['target'])
+    thin_train_df = zconv.transform(train[var_types['thin']])
+    thin_test_df = zconv.transform(test[var_types['thin']])
+
+    # One-hot encoding of the rest
+    enc = CategoryEncoder()
+    enc.fit(train[var_types['straightforward']])
+    ohe_train = enc.transform(train[var_types['straightforward']])
+    ohe_test = enc.transform(test[var_types['straightforward']])
+
+    # Combine into train/test dataframes
+    train = pd.concat([
+        date_df.loc[train_idx],
+        eng_date_df.loc[train_idx],
+        eng_geo_df.loc[train_idx],
+        thin_train_df,
+        ohe_train], axis=1)
+    test = pd.concat([
+        date_df.loc[test_idx],
+        eng_date_df.loc[test_idx],
+        eng_geo_df.loc[test_idx],
+        thin_test_df,
+        ohe_test], axis=1)
+    # 
+    # # Impute Missing
+    # imp = Imputer()
+    # train = imp.fit_transform(train)
+    # test = imp.transform(test)
+
+    return train, test
+
 
 
 
