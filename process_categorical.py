@@ -179,7 +179,7 @@ def prep_geography(df):
 
 def engineer_dates(df):
     # Take differences
-    diff_df = [('-'.join([col1, col2]), df[col1] - df[col2]) for col1 in df for col2 in df if not col1==col2]
+    diff_df = [('-'.join([col1, col2]), df[col1] - df[col2]) for col1 in df for col2 in df if col1 < col2]
     diff_df = pd.DataFrame.from_dict(dict(diff_df))
 
     # Min/max/num present
@@ -207,7 +207,7 @@ def prep_categorical(df, train_idx, test_idx):
     test = df.loc[test_idx, :]
 
     # Thinly sliced columns
-    zconv = ConvertZScore(thresh = 100)
+    zconv = ConvertZScore(thresh = 200)
     zconv.fit(train[var_types['thin']], train['target'])
     thin_train_df = zconv.transform(train[var_types['thin']])
     thin_test_df = zconv.transform(test[var_types['thin']])
@@ -231,32 +231,10 @@ def prep_categorical(df, train_idx, test_idx):
         eng_geo_df.loc[test_idx],
         thin_test_df,
         ohe_test], axis=1)
-    # 
+    #
     # # Impute Missing
     # imp = Imputer()
     # train = imp.fit_transform(train)
     # test = imp.transform(test)
 
     return train, test
-
-
-
-
-if __name__ == 'main':
-
-    # Load data
-    train = pd.read_csv('data/train.csv')
-    train = train.set_index('ID')
-
-    # dates
-    date_df = convert_all_date_columns(train)
-
-    # Geography
-
-    # Thin columns
-
-    # Dummy variables
-
-    # Run model
-
-    pass
